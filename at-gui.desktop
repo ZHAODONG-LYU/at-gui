@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=AT Serial GUI
+Name[zh_CN]=AT 串口调试
+Comment=Serial AT commands (4G/5G modules)
+Exec=/usr/bin/at-gui
+Icon=applications-utilities
+Terminal=false
+Type=Application
+Categories=Development;Utility;
