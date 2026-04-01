@@ -1,194 +1,195 @@
-import os
-import sys
-from pathlib import Path
-
-
-def _bootstrap_qt_plugins_for_pyinstaller() -> None:
-    """PyInstaller 单文件：在 import Qt 前设置插件路径，否则只会在 /usr/bin/platforms 瞎找。"""
-    # 不要依赖 sys.frozen，部分环境下不可靠；有 _MEIPASS 就是 PyInstaller 运行时
-    base = getattr(sys, "_MEIPASS", None)
-    if not base:
-        return
-    root = Path(base)
-
-    def try_set(plugins_dir: Path, platforms_dir: Path) -> bool:
-        if not platforms_dir.is_dir():
-            return False
-        # 父目录是 Qt 的 plugins（含 platforms、imageformats 等）
-        os.environ["QT_PLUGIN_PATH"] = str(plugins_dir)
-        # 部分发行版/版本会认这个
-        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(platforms_dir)
-        return True
-
-    # 1) 常见固定路径
-    for rel in (
-        Path("PySide6") / "Qt" / "plugins",
-        Path("PySide6") / "Qt" / "lib" / "qt6" / "plugins",
-    ):
-        pdir = root / rel
-        if try_set(pdir, pdir / "platforms"):
-            return
-
-    # 2) 在解压目录里搜 platforms/libqxcb.so（布局因 PyInstaller 版本可能变化）
-    try:
-        for lib in root.rglob("libqxcb.so"):
-            if lib.parent.name == "platforms":
-                if try_set(lib.parent.parent, lib.parent):
-                    return
-    except OSError:
-        pass
-
-    print(
-        "AT-GUI: Qt plugins not found under _MEIPASS; GUI may fail.",
-        file=sys.stderr,
-    )
-
-
-_bootstrap_qt_plugins_for_pyinstaller()
+#!/usr/bin/env python3
+import queue
+import threading
+import tkinter as tk
+from tkinter import messagebox, scrolledtext, ttk
 
 import serial
 import serial.tools.list_ports
-from PySide6.QtCore import QThread, Signal
-from PySide6.QtWidgets import (
-    QApplication,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QTextEdit,
-    QLineEdit,
-    QPushButton,
-    QComboBox,
-    QLabel,
-    QMessageBox,
-)
 
 
-class ReaderThread(QThread):
-    got = Signal(str)
-    err = Signal(str)
+class ATGuiApp:
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        self.root.title("AT Serial GUI")
+        self.root.geometry("900x560")
 
-    def __init__(self, ser):
-        super().__init__()
-        self.ser = ser
-        self.running = True
-
-    def run(self):
-        while self.running:
-            try:
-                line = self.ser.readline()
-                if line:
-                    self.got.emit(line.decode(errors="replace"))
-            except Exception as exc:
-                self.err.emit(str(exc))
-                break
-
-    def stop(self):
-        self.running = False
-
-
-class MainWindow(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("AT Serial GUI")
         self.ser = None
-        self.reader = None
+        self.reader_thread = None
+        self.reader_stop = threading.Event()
+        self.rx_queue = queue.Queue()
 
-        self.port_box = QComboBox()
-        self.baud_box = QComboBox()
-        self.baud_box.addItems(["115200", "9600", "57600", "230400", "460800", "921600"])
-        self.refresh_btn = QPushButton("Refresh")
-        self.conn_btn = QPushButton("Connect")
-        self.log = QTextEdit()
-        self.log.setReadOnly(True)
-        self.input = QLineEdit()
-        self.input.setPlaceholderText("Enter AT command, e.g. AT+CGSN")
-        self.send_btn = QPushButton("Send")
-        self.send_btn.setEnabled(False)
+        self.port_var = tk.StringVar()
+        self.baud_var = tk.StringVar(value="115200")
+        self.input_var = tk.StringVar()
 
-        top = QHBoxLayout()
-        top.addWidget(QLabel("Port"))
-        top.addWidget(self.port_box)
-        top.addWidget(QLabel("Baud"))
-        top.addWidget(self.baud_box)
-        top.addWidget(self.refresh_btn)
-        top.addWidget(self.conn_btn)
-
-        bottom = QHBoxLayout()
-        bottom.addWidget(self.input)
-        bottom.addWidget(self.send_btn)
-
-        root = QVBoxLayout(self)
-        root.addLayout(top)
-        root.addWidget(self.log)
-        root.addLayout(bottom)
-
-        self.refresh_btn.clicked.connect(self.refresh_ports)
-        self.conn_btn.clicked.connect(self.toggle_connect)
-        self.send_btn.clicked.connect(self.send_cmd)
+        self._build_ui()
         self.refresh_ports()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.root.after(100, self.poll_messages)
 
-    def refresh_ports(self):
-        self.port_box.clear()
-        for port in serial.tools.list_ports.comports():
-            self.port_box.addItem(port.device)
+    def _build_ui(self) -> None:
+        top = ttk.Frame(self.root, padding=12)
+        top.pack(fill="x")
 
-    def toggle_connect(self):
+        ttk.Label(top, text="Port").pack(side="left")
+
+        self.port_box = ttk.Combobox(
+            top,
+            textvariable=self.port_var,
+            state="readonly",
+            width=28,
+        )
+        self.port_box.pack(side="left", padx=(8, 12))
+
+        ttk.Label(top, text="Baud").pack(side="left")
+
+        self.baud_box = ttk.Combobox(
+            top,
+            textvariable=self.baud_var,
+            state="readonly",
+            values=("115200", "9600", "57600", "230400", "460800", "921600"),
+            width=12,
+        )
+        self.baud_box.pack(side="left", padx=(8, 12))
+
+        self.refresh_btn = ttk.Button(top, text="Refresh", command=self.refresh_ports)
+        self.refresh_btn.pack(side="left", padx=(0, 8))
+
+        self.conn_btn = ttk.Button(top, text="Connect", command=self.toggle_connect)
+        self.conn_btn.pack(side="left")
+
+        middle = ttk.Frame(self.root, padding=(12, 0, 12, 0))
+        middle.pack(fill="both", expand=True)
+
+        self.log = scrolledtext.ScrolledText(
+            middle,
+            wrap="word",
+            font=("DejaVu Sans Mono", 11),
+        )
+        self.log.pack(fill="both", expand=True)
+        self.log.configure(state="disabled")
+
+        bottom = ttk.Frame(self.root, padding=12)
+        bottom.pack(fill="x")
+
+        self.input_entry = ttk.Entry(bottom, textvariable=self.input_var)
+        self.input_entry.pack(side="left", fill="x", expand=True)
+        self.input_entry.bind("<Return>", self.send_cmd)
+
+        self.send_btn = ttk.Button(bottom, text="Send", command=self.send_cmd)
+        self.send_btn.pack(side="left", padx=(8, 0))
+        self.send_btn.state(["disabled"])
+
+    def append_log(self, text: str) -> None:
+        self.log.configure(state="normal")
+        self.log.insert("end", text + "\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def refresh_ports(self) -> None:
+        ports = [port.device for port in serial.tools.list_ports.comports()]
+        self.port_box["values"] = ports
+        if ports:
+            current = self.port_var.get()
+            self.port_var.set(current if current in ports else ports[0])
+        else:
+            self.port_var.set("")
+
+    def toggle_connect(self) -> None:
         if self.ser and self.ser.is_open:
             self.disconnect_serial()
         else:
             self.connect_serial()
 
-    def connect_serial(self):
-        port = self.port_box.currentText()
+    def connect_serial(self) -> None:
+        port = self.port_var.get().strip()
         if not port:
-            QMessageBox.warning(self, "Tips", "No serial port found")
+            messagebox.showwarning("Tips", "No serial port found")
             return
-        baud = int(self.baud_box.currentText())
+
+        baud = int(self.baud_var.get())
         try:
             self.ser = serial.Serial(port, baudrate=baud, timeout=0.2)
-            self.reader = ReaderThread(self.ser)
-            self.reader.got.connect(lambda text: self.log.append(f"RX: {text.rstrip()}"))
-            self.reader.err.connect(lambda err: self.log.append(f"[ERR] {err}"))
-            self.reader.start()
-            self.conn_btn.setText("Disconnect")
-            self.send_btn.setEnabled(True)
-            self.log.append(f"[INFO] Connected {port} @ {baud}")
         except Exception as exc:
-            QMessageBox.critical(self, "Connect failed", str(exc))
+            messagebox.showerror("Connect failed", str(exc))
+            return
 
-    def disconnect_serial(self):
+        self.reader_stop.clear()
+        self.reader_thread = threading.Thread(target=self.reader_loop, daemon=True)
+        self.reader_thread.start()
+
+        self.conn_btn.configure(text="Disconnect")
+        self.send_btn.state(["!disabled"])
+        self.append_log(f"[INFO] Connected {port} @ {baud}")
+
+    def disconnect_serial(self) -> None:
+        self.reader_stop.set()
+
+        if self.reader_thread and self.reader_thread.is_alive():
+            self.reader_thread.join(timeout=0.5)
+        self.reader_thread = None
+
         try:
-            if self.reader:
-                self.reader.stop()
-                self.reader.wait(500)
             if self.ser and self.ser.is_open:
                 self.ser.close()
-            self.log.append("[INFO] Disconnected")
+                self.append_log("[INFO] Disconnected")
         finally:
-            self.conn_btn.setText("Connect")
-            self.send_btn.setEnabled(False)
+            self.ser = None
+            self.conn_btn.configure(text="Connect")
+            self.send_btn.state(["disabled"])
 
-    def send_cmd(self):
-        cmd = self.input.text().strip()
-        if not cmd:
+    def reader_loop(self) -> None:
+        while not self.reader_stop.is_set():
+            try:
+                if not self.ser:
+                    break
+                line = self.ser.readline()
+                if line:
+                    self.rx_queue.put(("rx", line.decode(errors="replace").rstrip()))
+            except Exception as exc:
+                self.rx_queue.put(("err", str(exc)))
+                break
+
+    def poll_messages(self) -> None:
+        while True:
+            try:
+                kind, payload = self.rx_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if kind == "rx":
+                self.append_log(f"RX: {payload}")
+            else:
+                self.append_log(f"[ERR] {payload}")
+                self.disconnect_serial()
+                break
+
+        self.root.after(100, self.poll_messages)
+
+    def send_cmd(self, _event=None) -> None:
+        cmd = self.input_var.get().strip()
+        if not cmd or not (self.ser and self.ser.is_open):
             return
-        if not (self.ser and self.ser.is_open):
-            return
+
         try:
             self.ser.write((cmd + "\r\n").encode())
-            self.log.append(f"TX: {cmd}")
-            self.input.clear()
+            self.append_log(f"TX: {cmd}")
+            self.input_var.set("")
         except Exception as exc:
-            self.log.append(f"[ERR] Send failed: {exc}")
+            self.append_log(f"[ERR] Send failed: {exc}")
 
-    def closeEvent(self, event):
+    def on_close(self) -> None:
         self.disconnect_serial()
-        super().closeEvent(event)
+        self.root.destroy()
+
+
+def main() -> int:
+    root = tk.Tk()
+    ATGuiApp(root)
+    root.mainloop()
+    return 0
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    win = MainWindow()
-    win.resize(900, 560)
-    win.show()
-    sys.exit(app.exec())
+    raise SystemExit(main())

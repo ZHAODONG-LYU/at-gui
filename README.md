@@ -1,18 +1,24 @@
 # at-gui
 
-A small Qt-based GUI for serial ports: connect, send AT commands, view responses. Intended for embedded cellular modules (AT over UART).
+A small Linux GUI for serial ports: connect, send AT commands, view responses. Intended for embedded cellular modules (AT over UART).
 
-**Stack:** Python 3, PySide6, pyserial. Linux builds use PyInstaller (`build.sh`); RPM packaging uses `fpm` (`package-rpm.sh`).
+**Stack:** Python 3, Tkinter, pyserial. RPM packaging uses `fpm` (`package-rpm.sh`) and installs a lightweight Python app instead of bundling a full runtime.
 
 ## Install (Fedora, RPM)
 
 After building the package locally:
 
 ```bash
-sudo rpm -Uvh at-gui-0.1.1-1.x86_64.rpm
+sudo rpm -Uvh at-gui-0.1.1-1.noarch.rpm
 ```
 
-Launch via the `at-gui` command or the desktop entry. The wrapper under `/usr/bin/at-gui` sets `QT_PLUGIN_PATH` for the bundled Qt plugins; run that entry point rather than calling `/opt/at-gui/at-gui.bin` directly.
+If dependencies are missing on the target machine, install them first:
+
+```bash
+sudo dnf install -y python3 python3-pyserial python3-tkinter
+```
+
+Launch via the `at-gui` command or the desktop entry.
 
 ## Build from source
 
@@ -23,11 +29,10 @@ Ruby and `fpm` are required for the RPM step.
 ./package-rpm.sh
 ```
 
-To run the unpacked binary during development:
+To run during development:
 
 ```bash
-export QT_PLUGIN_PATH="$PWD/dist/at-gui/_internal/PySide6/Qt/plugins"
-./dist/at-gui/at-gui
+python3 main.py
 ```
 
 ## Serial permissions
