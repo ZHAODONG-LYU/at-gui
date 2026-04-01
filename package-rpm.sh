@@ -8,7 +8,7 @@ if ! command -v fpm >/dev/null 2>&1; then
   exit 1
 fi
 
-VERSION="${VERSION:-0.1.1}"
+VERSION="${VERSION:-2.0}"
 RPM_NAME="at-gui-${VERSION}-1.noarch.rpm"
 rm -rf pkgroot
 mkdir -p pkgroot/opt/at-gui pkgroot/usr/bin pkgroot/usr/share/applications

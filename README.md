@@ -9,7 +9,7 @@ A small Linux GUI for serial ports: connect, send AT commands, view responses. I
 After building the package locally:
 
 ```bash
-sudo rpm -Uvh at-gui-0.1.1-1.noarch.rpm
+sudo rpm -Uvh at-gui-2.0-1.noarch.rpm
 ```
 
 If dependencies are missing on the target machine, install them first:
